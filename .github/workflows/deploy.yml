@@ -1,0 +1,79 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [ main, master ]  # при пуше в main
+  workflow_dispatch:              # можно запустить вручную
+
+jobs:
+  deploy:
+    name: Deploy to Yandex Cloud VM
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 1. Клонируем репозиторий
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. Настраиваем SSH-ключ для доступа к серверу
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      # 3. Добавляем сервер в known_hosts
+      - name: Add server to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+
+      # 4. Копируем файлы на сервер (только изменённые)
+      - name: Sync files to server
+        run: |
+          rsync -avz --delete \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude 'secrets/' \
+            ./ ubuntu@${{ secrets.SERVER_IP }}:/opt/pet-project/
+
+      # 5. Копируем секреты отдельно (если они есть в репозитории)
+      - name: Copy secrets
+        run: |
+          # Если секреты хранятся в GitHub Secrets, создаём их на сервере
+          echo "${{ secrets.DB_PASSWORD }}" | ssh ubuntu@${{ secrets.SERVER_IP }} "cat > /opt/pet-project/secrets/db_password.txt"
+          echo "${{ secrets.REDIS_PASSWORD }}" | ssh ubuntu@${{ secrets.SERVER_IP }} "cat > /opt/pet-project/secrets/redis_password.txt"
+          ssh ubuntu@${{ secrets.SERVER_IP }} "chmod 0400 /opt/pet-project/secrets/*.txt"
+
+      # 6. Деплой на сервере
+      - name: Deploy containers
+        run: |
+          ssh ubuntu@${{ secrets.SERVER_IP }} "
+            cd /opt/pet-project &&
+            docker compose down &&
+            docker compose up -d --build &&
+            echo '✅ Деплой завершён'
+          "
+
+      # 7. Проверка работоспособности
+      - name: Health check
+        run: |
+          sleep 10
+          curl -f http://${{ secrets.SERVER_IP }}/api/health || exit 1
+          echo "✅ Приложение работает"
+
+      # 8. Уведомление об успехе
+      - name: Success notification
+        if: success()
+        run: |
+          echo "🎉 Деплой успешно завершён!"
+          echo "🌐 Сайт: http://${{ secrets.SERVER_IP }}"
+          echo "📊 Grafana: http://${{ secrets.SERVER_IP }}:3000"
+          echo "📈 Prometheus: http://${{ secrets.SERVER_IP }}:9090"
+
+      # 9. Уведомление об ошибке
+      - name: Failure notification
+        if: failure()
+        run: |
+          echo "❌ Деплой не удался!"
+          echo "Проверьте логи на сервере:"
+          echo "ssh ubuntu@${{ secrets.SERVER_IP }} 'cd /opt/pet-project && docker compose logs'"
