@@ -68,12 +68,12 @@ jobs:
           "
 
       # 6. Деплой на сервере
-      - name: Deploy containers
+        - name: Deploy containers
         run: |
           ssh ubuntu@${{ secrets.SERVER_IP }} "
-            cd /opt/pet-project &&
-            docker compose down &&
-            docker compose up -d --build &&
+            cd /opt/pet-project && \
+            docker compose down && \
+            docker compose up -d --build && \
             echo '✅ Деплой завершён'
           "
 
