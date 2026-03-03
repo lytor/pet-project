@@ -40,3 +40,5 @@ venv/
 # Project specific
 temp/
 backup/
+.terraform/
+*.terraform.lock.hcl
