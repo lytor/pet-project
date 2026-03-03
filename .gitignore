@@ -1,5 +1,42 @@
+# Secrets
 secrets/
+*.txt
+!requirements.txt
+!*.md
+
+# Terraform
+*.tfstate
+*.tfstate.backup
+*.tfvars
+.terraform/
+
+# Ansible
+*.retry
+inventory.ini
+!inventory.ini.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
 *.log
+
+# Docker
 *.pid
 *.sock
-.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.env
+.venv
+venv/
+
+# Project specific
+temp/
+backup/
