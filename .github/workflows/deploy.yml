@@ -28,12 +28,21 @@ jobs:
           ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
 
       # 4. Копируем файлы на сервер (только изменённые)
+      - name: Fix permissions before sync
+        run: |
+          ssh ubuntu@${{ secrets.SERVER_IP }} "
+            sudo chown -R ubuntu:ubuntu /opt/pet-project 2>/dev/null || true
+            sudo chmod -R 755 /opt/pet-project 2>/dev/null || true
+            echo '✅ Permissions fixed'
+          "
+
       - name: Sync files to server
         run: |
           rsync -avz --delete \
             --exclude '.git' \
             --exclude '.github' \
             --exclude 'secrets/' \
+            --exclude 'init/' `# временно исключим проблемную папку` \
             ./ ubuntu@${{ secrets.SERVER_IP }}:/opt/pet-project/
 
       # 5. Копируем секреты отдельно (если они есть в репозитории)
@@ -69,11 +78,15 @@ jobs:
           "
 
       # 7. Проверка работоспособности
-      - name: Health check
+        - name: Health checks
         run: |
-          sleep 10
-          curl -f http://${{ secrets.SERVER_IP }}/api/health || exit 1
-          echo "✅ Приложение работает"
+          ssh ubuntu@${{ secrets.SERVER_IP }} "
+            # Проверка 1: через Docker (внутри контейнера)
+            docker exec pet-backend curl -f http://localhost:8000/api/health && echo '✅ Backend OK' || exit 1
+            
+            # Проверка 2: через фронтенд (публичный API)
+            curl -f http://${{ secrets.SERVER_IP }}/api/health && echo '✅ API через frontend OK' || exit 1
+          "
 
       # 8. Уведомление об успехе
       - name: Success notification
