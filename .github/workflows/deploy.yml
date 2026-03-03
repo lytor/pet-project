@@ -37,12 +37,26 @@ jobs:
             ./ ubuntu@${{ secrets.SERVER_IP }}:/opt/pet-project/
 
       # 5. Копируем секреты отдельно (если они есть в репозитории)
-      - name: Copy secrets
+      - name: Create secrets directory and files
         run: |
-          # Если секреты хранятся в GitHub Secrets, создаём их на сервере
-          echo "${{ secrets.DB_PASSWORD }}" | ssh ubuntu@${{ secrets.SERVER_IP }} "cat > /opt/pet-project/secrets/db_password.txt"
-          echo "${{ secrets.REDIS_PASSWORD }}" | ssh ubuntu@${{ secrets.SERVER_IP }} "cat > /opt/pet-project/secrets/redis_password.txt"
-          ssh ubuntu@${{ secrets.SERVER_IP }} "chmod 0400 /opt/pet-project/secrets/*.txt"
+          ssh ubuntu@${{ secrets.SERVER_IP }} "
+            # Создаём структуру папок с правильными правами
+            sudo mkdir -p /opt/pet-project/secrets
+            sudo chown -R ubuntu:ubuntu /opt/pet-project
+            sudo chmod 755 /opt/pet-project/secrets
+            
+            # Создаём файлы с секретами
+            echo '${{ secrets.DB_PASSWORD }}' > /opt/pet-project/secrets/db_password.txt
+            echo '${{ secrets.REDIS_PASSWORD }}' > /opt/pet-project/secrets/redis_password.txt
+            
+            # Устанавливаем правильные права (только чтение для владельца)
+            chmod 0400 /opt/pet-project/secrets/*.txt
+            
+            # Проверяем результат
+            echo '=== Secrets directory ==='
+            ls -la /opt/pet-project/secrets/
+            echo '✅ Secrets created successfully'
+          "
 
       # 6. Деплой на сервере
       - name: Deploy containers
