@@ -1,0 +1,349 @@
+---
+- name: Полная настройка DevOps сервера с изоляцией
+  hosts: all
+  become: yes
+  vars:
+    ansible_user: ubuntu
+    ansible_ssh_private_key_file: ~/.ssh/id_ed25519
+    project_dir: /opt/pet-project
+
+  tasks:
+    - name: Обновление кэша пакетов
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Установка базовых пакетов
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - software-properties-common
+          - python3-pip
+          - python3-setuptools
+          - git
+          - ufw
+          - htop
+          - jq
+        state: present
+
+    # ===== УСТАНОВКА DOCKER =====
+    - name: Установка Docker GPG ключа
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Добавление Docker репозитория
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+
+    - name: Установка Docker и плагинов
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: yes
+
+    - name: Запуск и включение Docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    # ===== НАСТРОЙКА ПРАВ DOCKER =====
+    - name: Добавление пользователя ubuntu в группу docker
+      user:
+        name: ubuntu
+        groups: docker
+        append: yes
+      register: docker_group_added
+
+    - name: Принудительный сброс SSH-соединения (для применения группы)
+      meta: reset_connection
+      when: docker_group_added.changed
+
+    - name: Пауза для применения изменений
+      pause:
+        seconds: 5
+      when: docker_group_added.changed
+
+    # ===== УСТАНОВКА PYTHON МОДУЛЕЙ =====
+    - name: Установка Docker модуля для Python
+      pip:
+        name:
+          - docker
+          - docker-compose
+        state: present
+
+    # ===== ПОДГОТОВКА ДИРЕКТОРИЙ =====
+    - name: Создание директорий для проекта
+      file:
+        path: "{{ project_dir }}/{{ item }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+      loop:
+        - backend
+        - frontend
+        - monitoring
+        - secrets
+        - nginx
+        - init/postgres
+
+    # ===== КОПИРОВАНИЕ ФАЙЛОВ =====
+    - name: Копирование docker-compose.yml
+      copy:
+        src: files/docker-compose.yml
+        dest: "{{ project_dir }}/docker-compose.yml"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+      register: compose_copied
+
+    - name: Копирование конфигурации Nginx
+      copy:
+        src: files/nginx/default.conf
+        dest: "{{ project_dir }}/nginx/default.conf"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+
+    - name: Копирование backend приложения
+      copy:
+        src: files/backend/
+        dest: "{{ project_dir }}/backend/"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+
+    - name: Копирование frontend приложения
+      copy:
+        src: files/frontend/
+        dest: "{{ project_dir }}/frontend/"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+
+    - name: Копирование конфигурации мониторинга
+      copy:
+        src: files/monitoring/
+        dest: "{{ project_dir }}/monitoring/"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+
+    - name: Копирование пароля для PostgreSQL
+      copy:
+        src: secrets/db_password.txt
+        dest: "{{ project_dir }}/secrets/db_password.txt"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0400'
+
+    - name: Копирование пароля для Redis
+      copy:
+        src: secrets/redis_password.txt
+        dest: "{{ project_dir }}/secrets/redis_password.txt"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0400'
+
+            # ===== ПРОВЕРКА И СОЗДАНИЕ DOCKERFILE =====
+    - name: Проверка наличия Dockerfile в backend
+      stat:
+        path: "{{ project_dir }}/backend/Dockerfile"
+      register: backend_dockerfile
+
+    - name: Создание Dockerfile для backend (если отсутствует)
+      copy:
+        content: |
+          FROM python:3.11-slim
+          WORKDIR /app
+          COPY requirements.txt .
+          RUN pip install --no-cache-dir -r requirements.txt
+          COPY app.py .
+          EXPOSE 8000
+          CMD ["python", "app.py"]
+        dest: "{{ project_dir }}/backend/Dockerfile"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+      when: not backend_dockerfile.stat.exists
+
+    - name: Проверка наличия Dockerfile в frontend
+      stat:
+        path: "{{ project_dir }}/frontend/Dockerfile"
+      register: frontend_dockerfile
+
+    - name: Создание Dockerfile для frontend (если отсутствует)
+      copy:
+        content: |
+          FROM nginx:alpine
+          COPY index.html /usr/share/nginx/html/
+          EXPOSE 80
+          CMD ["nginx", "-g", "daemon off;"]
+        dest: "{{ project_dir }}/frontend/Dockerfile"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+      when: not frontend_dockerfile.stat.exists
+
+    - name: Создание requirements.txt для backend (если отсутствует)
+      copy:
+        content: |
+          flask==2.3.3
+          psycopg2-binary==2.9.9
+          redis==5.0.1
+          prometheus-flask-exporter==0.23.0
+        dest: "{{ project_dir }}/backend/requirements.txt"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+      when: not backend_dockerfile.stat.exists
+
+    # ===== СОЗДАНИЕ .ENV ФАЙЛА =====
+    - name: Чтение паролей из файлов
+      slurp:
+        src: "{{ project_dir }}/secrets/{{ item }}"
+      loop:
+        - db_password.txt
+        - redis_password.txt
+      register: secrets_content
+
+    - name: Создание .env файла
+      copy:
+        content: |
+          # Автоматически сгенерировано Ansible
+          
+          # PostgreSQL
+          POSTGRES_DB=myapp
+          POSTGRES_USER=user
+          POSTGRES_PASSWORD={{ secrets_content.results[0].content | b64decode | trim }}
+          
+          # Redis
+          REDIS_PASSWORD={{ secrets_content.results[1].content | b64decode | trim }}
+          
+          # Приложение
+          APP_ENV=production
+          APP_SECRET={{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}
+          
+          # Мониторинг
+          GRAFANA_ADMIN_PASSWORD=admin
+        dest: "{{ project_dir }}/.env"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'
+
+    # ===== ПРОВЕРКА ФАЙЛОВ =====
+    - name: Проверка наличия docker-compose.yml
+      stat:
+        path: "{{ project_dir }}/docker-compose.yml"
+      register: compose_file_check
+
+    - name: Вывод статуса проверки
+      debug:
+        msg: "docker-compose.yml {{ 'найден' if compose_file_check.stat.exists else 'НЕ НАЙДЕН - ошибка!' }}"
+
+        # ===== ЗАПУСК КОНТЕЙНЕРОВ (СОВРЕМЕННАЯ ВЕРСИЯ) =====
+    - name: Остановка старых контейнеров (если есть)
+      shell:
+        cmd: |
+          cd {{ project_dir }}
+          docker compose down
+      become_user: ubuntu
+      ignore_errors: yes
+      when: compose_file_check.stat.exists
+      register: down_result
+
+    - name: Запуск контейнеров через docker compose v2
+      community.docker.docker_compose_v2:
+        project_src: "{{ project_dir }}"
+        files:
+          - docker-compose.yml
+        state: present
+        build: always  # ← ВАЖНО: собирать образы
+        remove_orphans: yes
+      become_user: ubuntu
+      register: up_result
+      when: compose_file_check.stat.exists
+
+    - name: Результат запуска
+      debug:
+        msg: "Контейнеры запущены: {{ up_result.containers | map(attribute='Name') | list if up_result.containers is defined else [] }}"
+      when: up_result is defined
+
+    # ===== ПРОВЕРКА РАБОТЫ =====
+    - name: Проверка запущенных контейнеров
+      shell: |
+        cd {{ project_dir }}
+        docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
+      become_user: ubuntu
+      register: docker_ps
+      ignore_errors: yes
+
+    - name: Вывод списка контейнеров
+      debug:
+        msg: "{{ docker_ps.stdout_lines | default(['Нет запущенных контейнеров']) }}"
+
+    - name: Проверка доступности сайта
+      uri:
+        url: "http://localhost"
+        method: GET
+        status_code: 200
+      register: site_check
+      ignore_errors: yes
+      when: compose_file_check.stat.exists
+
+    - name: Результат проверки сайта
+      debug:
+        msg: "Сайт {{ 'доступен' if site_check.status == 200 else 'НЕ доступен' }}"
+
+    # ===== НАСТРОЙКА UFW =====
+    - name: Настройка UFW - разрешить SSH
+      ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+
+    - name: Настройка UFW - разрешить HTTP
+      ufw:
+        rule: allow
+        port: '80'
+        proto: tcp
+
+    - name: Настройка UFW - включить с политикой deny по умолчанию
+      ufw:
+        state: enabled
+        policy: deny
+        direction: incoming
+
+    # ===== ИТОГОВАЯ ИНФОРМАЦИЯ =====
+    - name: Получение IP адреса
+      shell: curl -s ifconfig.me
+      register: public_ip
+      ignore_errors: yes
+
+    - name: Вывод информации для подключения
+      debug:
+        msg:
+          - ""
+          - "✅ Проект успешно развернут!"
+          - "================================="
+          - "🌐 Сайт: http://{{ public_ip.stdout if public_ip.stdout else ansible_default_ipv4.address }}"
+          - "🔧 API: http://{{ public_ip.stdout if public_ip.stdout else ansible_default_ipv4.address }}/api/health"
+          - "📊 Grafana: http://{{ public_ip.stdout if public_ip.stdout else ansible_default_ipv4.address }}:3000 (admin/admin)"
+          - "📈 Prometheus: http://{{ public_ip.stdout if public_ip.stdout else ansible_default_ipv4.address }}:9090"
+          - ""
+          - "🔐 Подключение к серверу:"
+          - "ssh ubuntu@{{ public_ip.stdout if public_ip.stdout else ansible_default_ipv4.address }}"
+          - ""
+          - "📋 Проверка контейнеров на сервере:"
+          - "docker ps"
+          - "docker compose -f {{ project_dir }}/docker-compose.yml ps"

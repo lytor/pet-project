@@ -1,0 +1,5 @@
+secrets/
+*.log
+*.pid
+*.sock
+.DS_Store
