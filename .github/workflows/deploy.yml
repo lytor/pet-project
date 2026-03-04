@@ -21,6 +21,13 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
+      - name: Debug SSH connection
+        run: |
+          echo "=== SSH ключи в агенте ==="
+          ssh-add -l
+          echo "=== Пробуем подключиться ==="
+          ssh -vvv -o StrictHostKeyChecking=no ubuntu@${{ secrets.SERVER_IP }} "echo 'SSH OK'"
+
       # 3. Добавляем сервер в known_hosts
       - name: Add server to known_hosts
         run: |
