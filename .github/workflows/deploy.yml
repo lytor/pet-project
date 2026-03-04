@@ -2,8 +2,8 @@ name: Deploy to Production
 
 on:
   push:
-    branches: [ main, master ]  # при пуше в main
-  workflow_dispatch:              # можно запустить вручную
+    branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -15,7 +15,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. Настраиваем SSH-ключ для доступа к серверу
+      # 2. Настраиваем SSH-ключ
       - name: Setup SSH
         uses: webfactory/ssh-agent@v0.9.0
         with:
@@ -27,7 +27,7 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
 
-      # 4. Копируем файлы на сервер (только изменённые)
+      # 4. Исправляем права на сервере
       - name: Fix permissions before sync
         run: |
           ssh ubuntu@${{ secrets.SERVER_IP }} "
@@ -36,39 +36,32 @@ jobs:
             echo '✅ Permissions fixed'
           "
 
+      # 5. Синхронизируем файлы
       - name: Sync files to server
         run: |
           rsync -avz --delete \
             --exclude '.git' \
             --exclude '.github' \
             --exclude 'secrets/' \
-            --exclude 'init/' `# временно исключим проблемную папку` \
+            --exclude 'init/' \
             ./ ubuntu@${{ secrets.SERVER_IP }}:/opt/pet-project/
 
-      # 5. Копируем секреты отдельно (если они есть в репозитории)
+      # 6. Создаём секреты
       - name: Create secrets directory and files
         run: |
           ssh ubuntu@${{ secrets.SERVER_IP }} "
-            # Создаём структуру папок с правильными правами
             sudo mkdir -p /opt/pet-project/secrets
             sudo chown -R ubuntu:ubuntu /opt/pet-project
             sudo chmod 755 /opt/pet-project/secrets
-            
-            # Создаём файлы с секретами
             echo '${{ secrets.DB_PASSWORD }}' > /opt/pet-project/secrets/db_password.txt
             echo '${{ secrets.REDIS_PASSWORD }}' > /opt/pet-project/secrets/redis_password.txt
-            
-            # Устанавливаем правильные права (только чтение для владельца)
             chmod 0400 /opt/pet-project/secrets/*.txt
-            
-            # Проверяем результат
-            echo '=== Secrets directory ==='
             ls -la /opt/pet-project/secrets/
             echo '✅ Secrets created successfully'
           "
 
-      # 6. Деплой на сервере
-        - name: Deploy containers
+      # 7. Деплой контейнеров
+      - name: Deploy containers
         run: |
           ssh ubuntu@${{ secrets.SERVER_IP }} "
             cd /opt/pet-project && \
@@ -77,18 +70,15 @@ jobs:
             echo '✅ Деплой завершён'
           "
 
-      # 7. Проверка работоспособности
-        - name: Health checks
+      # 8. Проверка работоспособности
+      - name: Health checks
         run: |
           ssh ubuntu@${{ secrets.SERVER_IP }} "
-            # Проверка 1: через Docker (внутри контейнера)
             docker exec pet-backend curl -f http://localhost:8000/api/health && echo '✅ Backend OK' || exit 1
-            
-            # Проверка 2: через фронтенд (публичный API)
-            curl -f http://${{ secrets.SERVER_IP }}/api/health && echo '✅ API через frontend OK' || exit 1
           "
+          curl -f http://${{ secrets.SERVER_IP }}/api/health && echo '✅ API через frontend OK' || exit 1
 
-      # 8. Уведомление об успехе
+      # 9. Уведомление об успехе
       - name: Success notification
         if: success()
         run: |
@@ -97,7 +87,7 @@ jobs:
           echo "📊 Grafana: http://${{ secrets.SERVER_IP }}:3000"
           echo "📈 Prometheus: http://${{ secrets.SERVER_IP }}:9090"
 
-      # 9. Уведомление об ошибке
+      # 10. Уведомление об ошибке
       - name: Failure notification
         if: failure()
         run: |
