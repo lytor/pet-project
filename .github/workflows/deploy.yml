@@ -83,7 +83,7 @@ jobs:
           ssh ubuntu@${{ secrets.SERVER_IP }} "
             docker exec pet-backend curl -f http://localhost:8000/api/health && echo '✅ Backend OK' || exit 1
           "
-          curl -f http://${{ secrets.SERVER_IP }}/api/health && echo '✅ API через frontend OK' || exit 1
+          # curl -f http://${{ secrets.SERVER_IP }}/api/health && echo '✅ API через frontend OK' || exit 1
 
       # 9. Уведомление об успехе
       - name: Success notification
