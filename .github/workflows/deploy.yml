@@ -110,7 +110,7 @@ jobs:
             echo '✅ Secrets created successfully'
           "
 
-            # 8. Создаём .env файл для docker-compose
+      # 8. Создаём .env файл для docker-compose
       - name: Create .env file
         run: |
           ssh ubuntu@${{ secrets.SERVER_IP }} "
