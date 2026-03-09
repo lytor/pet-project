@@ -110,25 +110,6 @@ jobs:
             echo '✅ Secrets created successfully'
           "
 
-      # 8. Создаём .env файл для docker-compose
-      - name: Create .env file
-        run: |
-          ssh ubuntu@${{ secrets.SERVER_IP }} "
-            cat > ${{ env.PROJECT_DIR }}/.env << 'EOF'
-COMPOSE_PROJECT_NAME=${{ env.COMPOSE_PROJECT_NAME }}
-ENVIRONMENT=${{ github.event.inputs.environment || 'production' }}
-DB_PASSWORD_FILE=${{ env.PROJECT_DIR }}/secrets/db_password.txt
-REDIS_PASSWORD_FILE=${{ env.PROJECT_DIR }}/secrets/redis_password.txt
-POSTGRES_PASSWORD_FILE=${{ env.PROJECT_DIR }}/secrets/postgres_password.txt
-GRAFANA_ADMIN_PASSWORD=\$(cat ${{ env.PROJECT_DIR }}/secrets/grafana_password.txt)
-DOMAIN=${{ secrets.DOMAIN }}
-SERVER_IP=${{ secrets.SERVER_IP }}
-COMMIT_SHA=${{ github.sha }}
-DEPLOY_TIME=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
-EOF
-            echo '✅ .env файл создан'
-          "
-
       # 9. Загрузка образов с ретраями
       - name: Pull Docker images
         run: |
