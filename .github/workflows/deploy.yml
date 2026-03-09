@@ -4,6 +4,22 @@ on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+env:
+  PROJECT_DIR: /opt/pet-project
+  COMPOSE_PROJECT_NAME: pet
+  DOCKER_BUILDKIT: 1
+  COMPOSE_DOCKER_CLI_BUILD: 1
+  BACKUP_DIR: /opt/backups
 
 jobs:
   deploy:
@@ -25,8 +41,8 @@ jobs:
         run: |
           echo "=== SSH ключи в агенте ==="
           ssh-add -l
-          echo "=== Пробуем подключиться ==="
-          ssh -vvv -o StrictHostKeyChecking=no ubuntu@${{ secrets.SERVER_IP }} "echo 'SSH OK'"
+          echo "=== Проверка подключения ==="
+          ssh -o StrictHostKeyChecking=no ubuntu@${{ secrets.SERVER_IP }} "hostname && date && echo 'SSH OK'"
 
       # 3. Добавляем сервер в known_hosts
       - name: Add server to known_hosts
@@ -34,70 +50,180 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
 
-      # 4. Исправляем права на сервере
-      - name: Fix permissions before sync
+      # 4. Подготовка директорий
+      - name: Prepare directories
         run: |
           ssh ubuntu@${{ secrets.SERVER_IP }} "
-            sudo chown -R ubuntu:ubuntu /opt/pet-project 2>/dev/null || true
-            sudo chmod -R 755 /opt/pet-project 2>/dev/null || true
-            echo '✅ Permissions fixed'
+            sudo mkdir -p ${{ env.PROJECT_DIR }} ${{ env.BACKUP_DIR }}
+            sudo chown -R ubuntu:ubuntu ${{ env.PROJECT_DIR }} ${{ env.BACKUP_DIR }}
+            sudo chmod 755 ${{ env.PROJECT_DIR }}
+            echo '✅ Директории готовы'
           "
 
-      # 5. Синхронизируем файлы
+      # 5. Создание бэкапа перед деплоем
+      - name: Create backup before deployment
+        run: |
+          ssh ubuntu@${{ secrets.SERVER_IP }} "
+            TIMESTAMP=\$(date +%Y%m%d_%H%M%S)
+            if [ -d \"${{ env.PROJECT_DIR }}\" ] && [ -f \"${{ env.PROJECT_DIR }}/docker-compose.yml\" ]; then
+              mkdir -p ${{ env.BACKUP_DIR }}/\$TIMESTAMP
+              cp -r ${{ env.PROJECT_DIR }}/* ${{ env.BACKUP_DIR }}/\$TIMESTAMP/ 2>/dev/null || true
+              echo \"✅ Бэкап создан в \$TIMESTAMP\"
+              
+              # Очистка старых бэкапов (оставляем последние 5)
+              cd ${{ env.BACKUP_DIR }} && ls -t | tail -n +6 | xargs -r rm -rf
+            else
+              echo 'ℹ️ Нет существующего проекта для бэкапа'
+            fi
+          "
+
+      # 6. Синхронизируем файлы
       - name: Sync files to server
         run: |
           rsync -avz --delete \
             --exclude '.git' \
             --exclude '.github' \
             --exclude 'secrets/' \
-            --exclude 'init/' \
-            ./ ubuntu@${{ secrets.SERVER_IP }}:/opt/pet-project/
+            --exclude '*.log' \
+            --exclude '*.tmp' \
+            --exclude '__pycache__' \
+            --exclude '*.pyc' \
+            --exclude '.env' \
+            ./ ubuntu@${{ secrets.SERVER_IP }}:${{ env.PROJECT_DIR }}/
 
-      # 6. Создаём секреты
+      # 7. Создаём файлы с секретами
       - name: Create secrets directory and files
         run: |
           ssh ubuntu@${{ secrets.SERVER_IP }} "
-            sudo mkdir -p /opt/pet-project/secrets
-            sudo chown -R ubuntu:ubuntu /opt/pet-project
-            sudo chmod 755 /opt/pet-project/secrets
-            echo '${{ secrets.DB_PASSWORD }}' > /opt/pet-project/secrets/db_password.txt
-            echo '${{ secrets.REDIS_PASSWORD }}' > /opt/pet-project/secrets/redis_password.txt
-            chmod 0400 /opt/pet-project/secrets/*.txt
-            ls -la /opt/pet-project/secrets/
+            mkdir -p ${{ env.PROJECT_DIR }}/secrets
+            chmod 700 ${{ env.PROJECT_DIR }}/secrets
+            
+            # Записываем секреты
+            echo '${{ secrets.DB_PASSWORD }}' > ${{ env.PROJECT_DIR }}/secrets/db_password.txt
+            echo '${{ secrets.REDIS_PASSWORD }}' > ${{ env.PROJECT_DIR }}/secrets/redis_password.txt
+            echo '${{ secrets.POSTGRES_PASSWORD }}' > ${{ env.PROJECT_DIR }}/secrets/postgres_password.txt
+            echo '${{ secrets.GRAFANA_ADMIN_PASSWORD }}' > ${{ env.PROJECT_DIR }}/secrets/grafana_password.txt
+            
+            # Устанавливаем права
+            chmod 0400 ${{ env.PROJECT_DIR }}/secrets/*.txt
+            ls -la ${{ env.PROJECT_DIR }}/secrets/
             echo '✅ Secrets created successfully'
           "
 
-      # 7. Деплой контейнеров
-      - name: Deploy containers
+      # 8. Создаём .env файл для docker-compose
+      - name: Create .env file
         run: |
           ssh ubuntu@${{ secrets.SERVER_IP }} "
-            cd /opt/pet-project && \
-            docker compose down && \
-            docker compose up -d --build && \
-            echo '✅ Деплой завершён'
+            cat > ${{ env.PROJECT_DIR }}/.env << EOF
+COMPOSE_PROJECT_NAME=${{ env.COMPOSE_PROJECT_NAME }}
+ENVIRONMENT=${{ github.event.inputs.environment || 'production' }}
+DB_PASSWORD_FILE=${{ env.PROJECT_DIR }}/secrets/db_password.txt
+REDIS_PASSWORD_FILE=${{ env.PROJECT_DIR }}/secrets/redis_password.txt
+POSTGRES_PASSWORD_FILE=${{ env.PROJECT_DIR }}/secrets/postgres_password.txt
+GRAFANA_ADMIN_PASSWORD=\$(cat ${{ env.PROJECT_DIR }}/secrets/grafana_password.txt)
+DOMAIN=${{ secrets.DOMAIN }}
+SERVER_IP=${{ secrets.SERVER_IP }}
+COMMIT_SHA=${{ github.sha }}
+DEPLOY_TIME=\$(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
+            echo '✅ .env файл создан'
           "
 
-      # 8. Проверка работоспособности
+      # 9. Загрузка образов с ретраями
+      - name: Pull Docker images
+        run: |
+          ssh ubuntu@${{ secrets.SERVER_IP }} "
+            cd ${{ env.PROJECT_DIR }}
+            for i in {1..3}; do
+              docker compose pull && break || sleep 5
+            done
+          "
+
+      # 10. Остановка старых контейнеров
+      - name: Stop old containers
+        run: |
+          ssh ubuntu@${{ secrets.SERVER_IP }} "
+            cd ${{ env.PROJECT_DIR }}
+            docker compose down --remove-orphans || true
+          "
+
+      # 11. Запуск новых контейнеров
+      - name: Start new containers
+        run: |
+          ssh ubuntu@${{ secrets.SERVER_IP }} "
+            cd ${{ env.PROJECT_DIR }}
+            docker compose up -d --build --remove-orphans --wait
+            docker compose ps
+          "
+
+      # 12. Очистка старых образов
+      - name: Cleanup
+        run: |
+          ssh ubuntu@${{ secrets.SERVER_IP }} "
+            docker system prune -f --filter 'until=24h'
+            docker image prune -f --filter 'until=24h'
+            docker volume prune -f
+          "
+
+      # 13. Проверка работоспособности
       - name: Health checks
         run: |
+          # Ждём, пока все сервисы запустятся
+          sleep 10
+          
+          # Проверка через Docker
           ssh ubuntu@${{ secrets.SERVER_IP }} "
-            docker exec pet-backend curl -f http://localhost:8000/api/health && echo '✅ Backend OK' || exit 1
+            cd ${{ env.PROJECT_DIR }}
+            SERVICES=('backend' 'postgres' 'redis' 'prometheus' 'grafana')
+            for service in \${SERVICES[@]}; do
+              if docker ps --format '{{.Names}}' | grep -q \"pet-\$service\"; then
+                echo \"✅ \$service запущен\"
+              else
+                echo \"❌ \$service не запущен\"
+                docker compose logs --tail=20 \$service
+                exit 1
+              fi
+            done
           "
-          # curl -f http://${{ secrets.SERVER_IP }}/api/health && echo '✅ API через frontend OK' || exit 1
+          
+          # Проверка API
+          curl -f http://${{ secrets.SERVER_IP }}:8000/api/health && echo '✅ API OK' || exit 1
 
-      # 9. Уведомление об успехе
-      - name: Success notification
-        if: success()
-        run: |
-          echo "🎉 Деплой успешно завершён!"
-          echo "🌐 Сайт: http://${{ secrets.SERVER_IP }}"
-          echo "📊 Grafana: http://${{ secrets.SERVER_IP }}:3000"
-          echo "📈 Prometheus: http://${{ secrets.SERVER_IP }}:9090"
+      # 14. Уведомление в Telegram
+      - name: Send Telegram notification
+        if: always()
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          message: |
+            🚀 **Деплой ${{ job.status == 'success' && 'успешен' || 'не удался' }}**
+            
+            📦 Проект: pet-project
+            🌿 Ветка: ${{ github.ref_name }}
+            🔍 Коммит: ${{ github.sha }}
+            👤 Автор: ${{ github.actor }}
+            📅 Время: ${{ github.event.head_commit.timestamp }}
+            
+            ${{ job.status == 'success' && '✅ Все проверки пройдены' || '❌ Требуется внимание' }}
+            
+            🔗 ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-      # 10. Уведомление об ошибке
-      - name: Failure notification
+      # 15. Rollback при ошибке
+      - name: Rollback on failure
         if: failure()
         run: |
-          echo "❌ Деплой не удался!"
-          echo "Проверьте логи на сервере:"
-          echo "ssh ubuntu@${{ secrets.SERVER_IP }} 'cd /opt/pet-project && docker compose logs'"
+          ssh ubuntu@${{ secrets.SERVER_IP }} "
+            LATEST_BACKUP=\$(ls -t ${{ env.BACKUP_DIR }} | head -1)
+            if [ -n \"\$LATEST_BACKUP\" ]; then
+              echo \"🔄 Откат к бэкапу \$LATEST_BACKUP\"
+              rm -rf ${{ env.PROJECT_DIR }}/*
+              cp -r ${{ env.BACKUP_DIR }}/\$LATEST_BACKUP/* ${{ env.PROJECT_DIR }}/
+              cd ${{ env.PROJECT_DIR }}
+              docker compose down
+              docker compose up -d
+              echo '✅ Откат выполнен'
+            else
+              echo '❌ Нет бэкапа для отката'
+            fi
+          "
