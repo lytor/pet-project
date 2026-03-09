@@ -110,11 +110,11 @@ jobs:
             echo '✅ Secrets created successfully'
           "
 
-      # 8. Создаём .env файл для docker-compose
+            # 8. Создаём .env файл для docker-compose
       - name: Create .env file
         run: |
           ssh ubuntu@${{ secrets.SERVER_IP }} "
-            cat > ${{ env.PROJECT_DIR }}/.env << EOF
+            cat > ${{ env.PROJECT_DIR }}/.env << 'EOF'
 COMPOSE_PROJECT_NAME=${{ env.COMPOSE_PROJECT_NAME }}
 ENVIRONMENT=${{ github.event.inputs.environment || 'production' }}
 DB_PASSWORD_FILE=${{ env.PROJECT_DIR }}/secrets/db_password.txt

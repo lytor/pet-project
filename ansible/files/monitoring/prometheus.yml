@@ -41,3 +41,18 @@ scrape_configs:
   - job_name: 'redis'
     static_configs:
       - targets: ['redis_exporter:9121']
+
+        # Мониторинг Docker-контейнеров
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: '(.*):.*'
+        replacement: '${1}'
+
+  # Мониторинг самого Prometheus
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

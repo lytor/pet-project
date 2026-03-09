@@ -282,8 +282,8 @@ services:
         limits:
           memory: 64M
 
-# Добавьте новые volumes
-alertmanager:
+  # Добавьте новые volumes
+ alertmanager:
   image: prom/alertmanager:latest
   container_name: pet-alertmanager
   restart: unless-stopped
