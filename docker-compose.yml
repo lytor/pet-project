@@ -25,6 +25,8 @@ volumes:
     name: pet-prometheus-data
   grafana_data:
     name: pet-grafana-data
+  loki_data:
+    driver: local  
 
 secrets:
   db_password:
@@ -281,14 +283,6 @@ services:
           memory: 64M
 
 # Добавьте новые volumes
-volumes:
-  prometheus_data:
-    driver: local
-  grafana_data:
-    driver: local
-  loki_data:
-    driver: local
-
 alertmanager:
   image: prom/alertmanager:latest
   container_name: pet-alertmanager
